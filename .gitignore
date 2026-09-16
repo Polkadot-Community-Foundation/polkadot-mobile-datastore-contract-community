@@ -1,0 +1,39 @@
+# Dependencies and build output
+node_modules
+artifacts
+artifacts-pvm
+cache
+cache-pvm
+typechain-types
+coverage
+coverage.json
+dist/
+ignition/deployments/chain-31337
+
+# Deployment records written by the deploy scripts
+deployments/
+
+# Environment and secrets (keep the example)
+.env*
+!.env.example
+*.local
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# AI-tooling local state
+.claude/sessions/
+.claude/cache/
+.claude/settings.local.json
+.cursor/
+.codeium/
+.gemini/
+.roo/
+.cline/
+.codex/
+.swarm/
+.aider*
+.mcp.json
+opencode.json
