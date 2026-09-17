@@ -12,9 +12,22 @@ const { JsonRpcProvider, Wallet } = require("ethers");
 
 const ROOT = path.join(__dirname, "..", "..");
 
+// genesisHash pins a preset to its chain, so a SUBSTRATE_WS_URL pointing elsewhere aborts before signing.
 const NETWORKS = {
   local: { wsUrl: "ws://127.0.0.1:9944", ethRpcUrl: "http://127.0.0.1:8545" },
-  next: { wsUrl: "wss://paseo-asset-hub-next-rpc.polkadot.io" },
+  next: { wsUrl: "wss://paseo-asset-hub-next-rpc.polkadot.io", pgasAssetId: "2000000000" },
+  // PCF devnet: Paseo Asset Hub, para 1000.
+  devnet: {
+    wsUrl: "wss://asset-hub-paseo-rpc.n.dwellir.com",
+    genesisHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
+    pgasAssetId: "2000000000",
+  },
+  // PCF production: Polkadot Asset Hub, para 1000.
+  production: {
+    wsUrl: "wss://polkadot-asset-hub-rpc.polkadot.io",
+    genesisHash: "0x68d56f15f85d3136970ec16946040bc1752654e906147f7e43e9d539d7c3de2f",
+    pgasAssetId: "49999999",
+  },
 };
 
 const ARTIFACTS = {
@@ -157,6 +170,7 @@ function useV4TransactionExtensions(api) {
 async function deployAccountDataStore({ networkName, wsUrl, suri, bytecode, dryRun, marginPercent, pgasAssetId }) {
   const network = NETWORKS[networkName] || {};
   const endpoint = wsUrl || network.wsUrl;
+  pgasAssetId = pgasAssetId || network.pgasAssetId || "2000000000";
   if (!endpoint) throw new Error(`Unknown network ${networkName}; use one of ${Object.keys(NETWORKS).join(", ")} or set SUBSTRATE_WS_URL`);
 
   await cryptoWaitReady();
@@ -169,6 +183,9 @@ async function deployAccountDataStore({ networkName, wsUrl, suri, bytecode, dryR
   useV4TransactionExtensions(api);
 
   try {
+    if (network.genesisHash && api.genesisHash.toHex() !== network.genesisHash) {
+      throw new Error(`${endpoint} is not ${networkName}: genesis ${api.genesisHash.toHex()}, expected ${network.genesisHash}`);
+    }
     const chain = (await api.rpc.system.chain()).toString();
     const { specName, specVersion } = api.runtimeVersion;
     console.log(`network=${networkName} endpoint=${endpoint}`);
@@ -292,4 +309,4 @@ function runCli(main) {
     .finally(() => process.exit());
 }
 
-module.exports = { NETWORKS, deployAccountDataStore, runCli };
+module.exports = { NETWORKS, ARTIFACTS, deployAccountDataStore, runCli };

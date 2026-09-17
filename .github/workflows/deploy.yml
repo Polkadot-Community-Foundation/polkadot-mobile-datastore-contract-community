@@ -1,0 +1,107 @@
+name: Deploy AccountDataStore
+
+# One workflow, two GitHub environments. Each environment holds its own deployer
+# secret and endpoint variable, so a devnet run can never sign with the production key.
+#   secret   DEPLOYER_MNEMONIC   sr25519 deployer (BIP-39)
+#   variable SUBSTRATE_WS_URL    optional; overrides the network preset endpoint
+#   variable CONTRACT_ADDRESS    set once deployed; blocks an accidental second instance
+# The production environment requires reviewer approval before the job starts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [devnet, production]
+        required: true
+      dry_run:
+        description: Estimate only, submit nothing
+        type: boolean
+        default: true
+      allow_redeploy:
+        description: Deploy even if CONTRACT_ADDRESS is already set
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ inputs.environment }}
+    env:
+      NETWORK: ${{ inputs.environment }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+      ALLOW_REDEPLOY: ${{ inputs.allow_redeploy }}
+      SUBSTRATE_WS_URL: ${{ vars.SUBSTRATE_WS_URL }}
+      CONTRACT_ADDRESS: ${{ vars.CONTRACT_ADDRESS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build PolkaVM bytecode
+        run: npm run build:pvm
+
+      - name: Check the PolkaVM bytecode hash
+        run: npm run -s check:bytecode
+
+      - name: Refuse a second instance
+        if: env.CONTRACT_ADDRESS != ''
+        run: |
+          ADDRESS="$CONTRACT_ADDRESS" npm run -s verify:deployment || true
+          if [ "$DRY_RUN" != "1" ] && [ "$ALLOW_REDEPLOY" != "true" ]; then
+            echo "::error::$NETWORK already has CONTRACT_ADDRESS=$CONTRACT_ADDRESS. Clients keep their records there; rerun with allow_redeploy only on purpose."
+            exit 1
+          fi
+
+      - name: Deploy
+        env:
+          DEPLOYER_MNEMONIC: ${{ secrets.DEPLOYER_MNEMONIC }}
+        run: |
+          if [ -z "$DEPLOYER_MNEMONIC" ]; then
+            echo "::error::The $NETWORK environment has no DEPLOYER_MNEMONIC secret."
+            exit 1
+          fi
+          npm run -s deploy:substrate
+
+      - name: Verify on chain
+        if: env.DRY_RUN != '1'
+        run: npm run -s verify:deployment
+
+      - name: Summary
+        if: env.DRY_RUN != '1'
+        run: |
+          ADDRESS=$(jq -r .address "deployments/$NETWORK.json")
+          {
+            echo "### AccountDataStore on $NETWORK"
+            echo ""
+            echo '```json'
+            cat "deployments/$NETWORK.json"
+            echo '```'
+            echo ""
+            echo "Remote Config \`account_data_store_config\`: \`{\"contractAddress\":\"$ADDRESS\"}\`"
+            echo ""
+            echo "Set the \`$NETWORK\` environment variable \`CONTRACT_ADDRESS=$ADDRESS\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deployment record
+        if: env.DRY_RUN != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-${{ inputs.environment }}
+          path: deployments/${{ inputs.environment }}.json
+          retention-days: 90

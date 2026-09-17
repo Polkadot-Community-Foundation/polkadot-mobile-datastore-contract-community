@@ -11,7 +11,7 @@
 // account through the runtime-pallets precompile (anvil-polkadot does not endow //Alice).
 //
 // Env:
-//   NETWORK            local (default) | next; `--network <name>` takes precedence
+//   NETWORK            local (default) | next | devnet | production; `--network <name>` takes precedence
 //   DEPLOYER_SURI      default //Alice
 //   SUBSTRATE_WS_URL   overrides the network's endpoint
 //   BYTECODE           pvm (default) | evm
@@ -36,6 +36,6 @@ runCli(() =>
     bytecode: process.env.BYTECODE || "pvm",
     dryRun: process.env.DRY_RUN === "1",
     marginPercent: BigInt(process.env.MARGIN_PERCENT || "20"),
-    pgasAssetId: process.env.PGAS_ASSET_ID || "2000000000",
+    pgasAssetId: process.env.PGAS_ASSET_ID,
   }),
 );

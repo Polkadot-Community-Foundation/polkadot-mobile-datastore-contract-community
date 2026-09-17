@@ -185,7 +185,7 @@ npm ci && npm run build:pvm
 
 # 1. Put the deployer's passphrase in the git-ignored .env (see .env.example); never on a shared command line.
 cp .env.example .env && $EDITOR .env         # DEPLOYER_MNEMONIC="<12 or 24 words>", optional DEPLOYER_DERIVATION
-export NETWORK=next                          # local | next; SUBSTRATE_WS_URL overrides the endpoint
+export NETWORK=next                          # local | next | devnet | production; SUBSTRATE_WS_URL overrides the endpoint
 
 # 2. Dry-run: prints the deployer's H160, PAS and PGAS balances, the mapping state,
 #    the predicted contract address, weight, storage deposit and fee. Submits nothing.
@@ -207,6 +207,13 @@ The script (shared logic in `scripts/lib/revive-deploy.js`):
 - Signs with only the extensions listed for metadata v16 extension version 0, which is what a v4 signed transaction carries. Chains that list the individuality extensions only in version 1 can then still decode it.
 - Calls `map_account` first only on chains without AutoMap, when the deployer is not yet mapped.
 - Accepts `BYTECODE=evm` to deploy the solc build instead.
+
+### PCF environments: `devnet` and `production`
+
+- `devnet` is Paseo Asset Hub (para 1000), `production` is Polkadot Asset Hub (para 1000). Each preset pins the chain's genesis hash, so a `SUBSTRATE_WS_URL` pointing at another chain aborts before signing, and carries its PGAS asset id.
+- `.github/workflows/deploy.yml` deploys by manual dispatch into the GitHub environment of the same name. Each environment holds its own `DEPLOYER_MNEMONIC` secret and optional `SUBSTRATE_WS_URL` and `CONTRACT_ADDRESS` variables; `production` requires reviewer approval.
+- The workflow builds, checks the bytecode hash (`npm run check:bytecode`), deploys (dry-run by default), runs `npm run verify:deployment`, and uploads `deployments/<environment>.json`.
+- Once `CONTRACT_ADDRESS` is set, a non-dry-run deploy stops unless `allow_redeploy` is ticked: records live under the address the clients read from Remote Config `account_data_store_config`, and a new instance starts empty.
 
 ### Dev deploy from `//Alice`, `scripts/deploy-alice.js`
 
