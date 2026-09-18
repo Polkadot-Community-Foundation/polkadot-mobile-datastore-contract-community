@@ -13,6 +13,7 @@ const { JsonRpcProvider, Wallet } = require("ethers");
 const ROOT = path.join(__dirname, "..", "..");
 
 // genesisHash pins a preset to its chain, so a SUBSTRATE_WS_URL pointing elsewhere aborts before signing.
+// ethChainId is what the chain's ETH-RPC reports; scripts/deploy-eth-rpc.js refuses any other.
 const NETWORKS = {
   local: { wsUrl: "ws://127.0.0.1:9944", ethRpcUrl: "http://127.0.0.1:8545" },
   next: { wsUrl: "wss://paseo-asset-hub-next-rpc.polkadot.io", pgasAssetId: "2000000000" },
@@ -20,12 +21,23 @@ const NETWORKS = {
   devnet: {
     wsUrl: "wss://asset-hub-paseo-rpc.n.dwellir.com",
     genesisHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
+    ethChainId: 420420417,
+    pgasAssetId: "2000000000",
+  },
+  // The devnet chain under a CI-only record name (deployments/pcf-devnet-ci.json): deploy.yml mode=devnet
+  // proves the KMS path there without touching the devnet instance's record.
+  "pcf-devnet-ci": {
+    wsUrl: "wss://asset-hub-paseo-rpc.n.dwellir.com",
+    ethRpcUrl: "https://eth-rpc-testnet.polkadot.io",
+    genesisHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
+    ethChainId: 420420417,
     pgasAssetId: "2000000000",
   },
   // PCF production: Polkadot Asset Hub, para 1000.
   production: {
     wsUrl: "wss://polkadot-asset-hub-rpc.polkadot.io",
     genesisHash: "0x68d56f15f85d3136970ec16946040bc1752654e906147f7e43e9d539d7c3de2f",
+    ethChainId: 420420419,
     pgasAssetId: "49999999",
   },
 };
@@ -309,4 +321,4 @@ function runCli(main) {
     .finally(() => process.exit());
 }
 
-module.exports = { NETWORKS, ARTIFACTS, deployAccountDataStore, runCli };
+module.exports = { NETWORKS, ARTIFACTS, InsufficientBalanceError, loadBytecode, writeDeployment, deployAccountDataStore, runCli };

@@ -14,7 +14,9 @@
     "e2e:substrate": "hardhat run scripts/substrate-e2e.js --network localNode",
     "abi": "hardhat compile && node scripts/export-abi.js",
     "deploy:substrate": "node scripts/deploy-substrate.js",
+    "deploy:eth-rpc": "node scripts/deploy-eth-rpc.js",
     "verify:deployment": "node scripts/verify-deployment.js",
+    "rehearse:fork": "bash scripts/rehearse-fork.sh",
     "deploy:alice": "node scripts/deploy-alice.js"
   },
   "engines": {
