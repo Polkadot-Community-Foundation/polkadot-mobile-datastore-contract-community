@@ -5,21 +5,20 @@ const { Wallet, Transaction, getCreateAddress } = require("ethers");
 const { keccakAsHex } = require("@polkadot/util-crypto");
 const { describeAccount, fallbackAccount, firstBlockAfterNonce, findEthTransact, retryRead, FatalDeployError } = require("../scripts/lib/eth-rpc-deploy");
 
-// The devnet CI deployer key, as recorded by deploy.yml run 35654640943.
-const DEVNET_CI_KEY = "0xf04989ba6f5376fd90456f84f91bcb744c1ddf59";
+// Test-only fixture: Anvil's well-known dev account #0 address. Not a PCF key, not secret.
+const TEST_ADDRESS = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
 
 describe("ETH-RPC deploy helpers", function () {
   it("derives the fallback account and its Polkadot-prefix address", function () {
-    const { accountId, ss58 } = describeAccount(DEVNET_CI_KEY);
-    expect(accountId).to.equal(`${DEVNET_CI_KEY}${"ee".repeat(12)}`);
-    expect(fallbackAccount(DEVNET_CI_KEY.toUpperCase().replace("0X", "0x"))).to.equal(accountId);
+    const { accountId, ss58 } = describeAccount(TEST_ADDRESS);
+    expect(accountId).to.equal(`${TEST_ADDRESS}${"ee".repeat(12)}`);
+    expect(fallbackAccount(TEST_ADDRESS.toUpperCase().replace("0X", "0x"))).to.equal(accountId);
     expect(ss58).to.match(/^1/); // prefix 0, not the generic 5…
-    // 5HVmCFh3WWUvb6dJGfC4CFonzpMy3MRWMoJbUKr1vfAJMX3W (prefix 42) re-encoded with prefix 0
-    expect(ss58).to.equal("16S4Lax7NHkQ2ddpEJF4LQdwrSMcjeyeSJ35dcqNUkBpXyQ8");
+    expect(ss58).to.equal("16WS7rfknHtQFnz5xppk2TMByix8a48oSxixDrkweG517vrW");
   });
 
   it("predicts create1 addresses the way the record expects", function () {
-    expect(getCreateAddress({ from: DEVNET_CI_KEY, nonce: 109 }).toLowerCase()).to.equal("0xc708915e977f37c95c295feb79761a3098decb29");
+    expect(getCreateAddress({ from: TEST_ADDRESS, nonce: 109 }).toLowerCase()).to.equal("0x34b40ba116d5dec75548a9e9a8f15411461e8c70");
   });
 
   describe("firstBlockAfterNonce", function () {
