@@ -5,27 +5,29 @@
 // Substrate RPC is read alongside (genesis pin, balances, block hash for the deployment record).
 //
 //   npm run build:pvm
+//   DEPLOY_SIGNER=gcp DEPLOY_MODE=devnet NETWORK=pcf-devnet-ci npm run deploy:eth-rpc
 //   DEPLOY_SIGNER=gcp DEPLOY_MODE=live NETWORK=production ETH_RPC_URL=http://127.0.0.1:8545 npm run deploy:eth-rpc
 //
-// The deployer key also deploys DotNS, whose CREATE3 factory must be the key's nonce 0. Deploying
-// AccountDataStore first would take that nonce, so the script refuses unless create1(sender, 0)
-// already holds code.
+// On production the deployer key also deploys DotNS, whose CREATE3 factory must be the key's nonce 0. Deploying
+// AccountDataStore first would take that nonce, so on the production chain (eth chain id 420420419 or its
+// genesis, live or a fork of it) the script refuses unless create1(sender, 0) already holds code. Elsewhere
+// (devnet) any nonce is fine and the check is a log line.
 //
 // Env:
 //   NETWORK            devnet | pcf-devnet-ci | production | next | local (default production); names
 //                      deployments/<NETWORK>.json. pcf-devnet-ci = the devnet chain under a CI-only record name.
 //   ETH_RPC_URL        the chain's ETH-RPC (default: the preset's; Polkadot Asset Hub has no public one)
 //   SUBSTRATE_WS_URL   overrides the network's Substrate endpoint
-//   DEPLOY_MODE        live (default) | fork. fork requires a chopsticks endpoint, live refuses one.
-//                      KMS keys are bound to chains (scripts/lib/key-guard.js): *-rehearsal on forks only,
-//                      *-devnet on live 420420417 only, any other on live 420420419 only.
+//   DEPLOY_MODE        devnet | live (default) | fork. devnet and live refuse a chopsticks endpoint, fork requires
+//                      one; devnet also requires the devnet chain. KMS keys are bound to modes and chains
+//                      (scripts/lib/key-guard.js): contract-deployer in live on 420420419 only, never on a fork;
+//                      *-devnet in devnet or fork on 420420417 only; any other name refused.
 //   DEPLOY_SIGNER      gcp | keystore | private-key
 //     gcp              GCP_PROJECT_ID, GCP_LOCATION, GCP_KEY_RING, GCP_KEY_NAME, GCP_KEY_VERSION (default 1)
-//     keystore         ETH_KEYSTORE (file) or ETH_KEYSTORE_ACCOUNT, ETH_PASSWORD (password file)
-//     private-key      DEPLOYER_PRIVATE_KEY; fork mode only
+//     keystore         ETH_KEYSTORE (file) or ETH_KEYSTORE_ACCOUNT, ETH_PASSWORD (password file); never production live
+//     private-key      DEPLOYER_PRIVATE_KEY; devnet and fork modes only
 //   DRY_RUN=1          preflight and estimate, submit nothing
-//   CONTRACT_ADDRESS   the environment's existing instance; a live deploy stops unless ALLOW_REDEPLOY=true
-//   ALLOW_NONCE0_WITHOUT_CODE=1  skip the nonce-0 check (testing only; refused for production live)
+//   CONTRACT_ADDRESS   the environment's existing instance; a devnet or live deploy stops unless ALLOW_REDEPLOY=true
 require("dotenv").config({ quiet: true });
 const fs = require("fs");
 const path = require("path");
@@ -35,11 +37,11 @@ const { encodeAddress, keccakAsHex } = require("@polkadot/util-crypto");
 const { hexToU8a } = require("@polkadot/util");
 const { JsonRpcProvider, getCreateAddress, formatUnits, parseUnits } = require("ethers");
 const { NETWORKS, InsufficientBalanceError, loadBytecode, writeDeployment, runCli } = require("./lib/revive-deploy");
-const { keyGuard } = require("./lib/key-guard");
+const { keyGuard, keyModeGuard, POLKADOT_ETH_CHAIN_ID } = require("./lib/key-guard");
 
 const ROOT = path.join(__dirname, "..");
 const PVM_MAGIC = "0x50564d00";
-const LIVE_MIN_BALANCE = "1.5";
+const MIN_BALANCE = "1.5";
 const SAME_CHAIN_TIMEOUT_MS = 90_000;
 const GCP_ENV = ["GCP_PROJECT_ID", "GCP_LOCATION", "GCP_KEY_RING", "GCP_KEY_NAME", "GCP_KEY_VERSION"];
 
@@ -53,9 +55,13 @@ function signerArgs(signer, mode, networkName, network) {
       process.env.GCP_KEY_VERSION ||= "1";
       const missing = GCP_ENV.filter((name) => !process.env[name]);
       if (missing.length) refuse(`DEPLOY_SIGNER=gcp needs ${missing.join(", ")}`);
-      // Early name check; the chain-based keyGuard runs once the chain is known.
-      const early = keyGuard(process.env.GCP_KEY_NAME, { chainId: network.ethChainId, fork: mode === "fork" });
-      if (early && (mode === "fork" || network.ethChainId)) refuse(early);
+      // Name and mode checks before anything connects; the chain-based keyGuard runs again once the chain is known.
+      const byMode = keyModeGuard(process.env.GCP_KEY_NAME, mode);
+      if (byMode) refuse(byMode);
+      if (network.ethChainId) {
+        const early = keyGuard(process.env.GCP_KEY_NAME, { chainId: network.ethChainId, fork: mode === "fork" });
+        if (early) refuse(early);
+      }
       return ["--gcp"];
     }
     case "keystore":
@@ -63,7 +69,7 @@ function signerArgs(signer, mode, networkName, network) {
       if (mode === "live" && networkName === "production") refuse("production live deploys sign with DEPLOY_SIGNER=gcp only");
       return [];
     case "private-key":
-      if (mode !== "fork") refuse("DEPLOY_SIGNER=private-key is for fork rehearsals only");
+      if (mode === "live") refuse("DEPLOY_SIGNER=private-key is for devnet and fork runs only");
       if (!process.env.DEPLOYER_PRIVATE_KEY) refuse("DEPLOY_SIGNER=private-key needs DEPLOYER_PRIVATE_KEY");
       return ["--private-key", process.env.DEPLOYER_PRIVATE_KEY];
     default:
@@ -150,13 +156,13 @@ runCli(async () => {
   const dryRun = process.env.DRY_RUN === "1";
   const wsUrl = process.env.SUBSTRATE_WS_URL || network.wsUrl;
   const ethRpcUrl = process.env.ETH_RPC_URL || network.ethRpcUrl;
-  if (!["fork", "live"].includes(mode)) refuse(`DEPLOY_MODE must be fork or live, got ${mode}`);
+  if (!["devnet", "live", "fork"].includes(mode)) refuse(`DEPLOY_MODE must be devnet, live or fork, got ${mode}`);
   if (!wsUrl) refuse(`Unknown network ${networkName}; set SUBSTRATE_WS_URL`);
   if (!ethRpcUrl) refuse("Set ETH_RPC_URL to the chain's ETH-RPC");
 
   const recordPath = path.join(ROOT, "deployments", `${networkName}.json`);
   if (!dryRun && process.env.ALLOW_REDEPLOY !== "true") {
-    if (mode === "live" && process.env.CONTRACT_ADDRESS) refuse(`${networkName} already has CONTRACT_ADDRESS=${process.env.CONTRACT_ADDRESS}; set ALLOW_REDEPLOY=true only on purpose`);
+    if (mode !== "fork" && process.env.CONTRACT_ADDRESS) refuse(`${networkName} already has CONTRACT_ADDRESS=${process.env.CONTRACT_ADDRESS}; set ALLOW_REDEPLOY=true only on purpose`);
     if (fs.existsSync(recordPath)) refuse(`${path.relative(ROOT, recordPath)} exists; move it out (a fork run writes one too) or set ALLOW_REDEPLOY=true`);
   }
 
@@ -172,15 +178,20 @@ runCli(async () => {
     if (network.genesisHash && genesisHash !== network.genesisHash) refuse(`${wsUrl} is not ${networkName}: genesis ${genesisHash}`);
     const chopsticks = await isChopsticks(api);
     if (mode === "fork" && !chopsticks) refuse(`DEPLOY_MODE=fork but ${wsUrl} is not a chopsticks fork`);
-    if (mode === "live" && chopsticks) refuse(`DEPLOY_MODE=live but ${wsUrl} is a chopsticks fork`);
+    if (mode !== "fork" && chopsticks) refuse(`DEPLOY_MODE=${mode} but ${wsUrl} is a chopsticks fork`);
+    if (mode === "devnet" && genesisHash !== NETWORKS.devnet.genesisHash) refuse(`DEPLOY_MODE=devnet but ${wsUrl} is not devnet Asset Hub: genesis ${genesisHash}`);
 
     const chainId = Number(await eth.send("eth_chainId", []));
     if (network.ethChainId && chainId !== network.ethChainId) refuse(`ETH-RPC chain id ${chainId}, ${networkName} is ${network.ethChainId}`);
+    // A fork keeps the chain id and genesis of what it forked: the nonce-0 rule holds on any copy of production.
+    const productionChain = chainId === POLKADOT_ETH_CHAIN_ID || genesisHash === NETWORKS.production.genesisHash;
     if (signer === "gcp") {
       const reason = keyGuard(process.env.GCP_KEY_NAME, { chainId, fork: chopsticks });
       if (reason) refuse(reason);
       // Chain ids are shared (all Asset Hub testnets report 420420417): a live KMS signature needs a pinned genesis.
       if (!chopsticks && !network.genesisHash) refuse(`DEPLOY_SIGNER=gcp signs live only on a preset that pins the genesis, not ${networkName}`);
+    } else if (productionChain && !chopsticks) {
+      refuse(`DEPLOY_SIGNER=${signer} never signs on live Polkadot Asset Hub (eth chain id ${chainId}); use gcp`);
     }
     await assertSameChain(api, eth, chopsticks, ethRpcUrl, wsUrl);
 
@@ -201,19 +212,17 @@ runCli(async () => {
     console.log(`deployer h160=${sender} account=${encodeAddress(fallbackAccount(sender), api.registry.chainSS58)} nonce=${nonce}`);
     console.log(`  free=${format(before.free)} reserved=${format(before.reserved)}`);
 
-    if (!(await isContract(api, nonceZeroAddress))) {
-      const override = process.env.ALLOW_NONCE0_WITHOUT_CODE === "1";
-      if (override && mode === "live" && genesisHash === NETWORKS.production.genesisHash) refuse("ALLOW_NONCE0_WITHOUT_CODE is refused for live deploys on Polkadot Asset Hub");
-      const message = `create1(${sender}, 0) = ${nonceZeroAddress} has no code: nonce 0 belongs to the DotNS CREATE3 factory, deploy DotNS first`;
-      if (!override) refuse(message);
-      console.log(`  WARNING ${message} (ALLOW_NONCE0_WITHOUT_CODE=1)`);
-    } else {
+    if (await isContract(api, nonceZeroAddress)) {
       console.log(`  nonce 0 used: ${nonceZeroAddress} holds code`);
+    } else if (productionChain) {
+      refuse(`create1(${sender}, 0) = ${nonceZeroAddress} has no code: nonce 0 belongs to the DotNS CREATE3 factory, deploy DotNS first`);
+    } else {
+      console.log(`  nonce 0 free: ${nonceZeroAddress} has no code (the DotNS-first rule applies on production only)`);
     }
 
-    const minBalance = parseUnits(LIVE_MIN_BALANCE, decimals);
-    if (mode === "live" && before.free < minBalance) {
-      throw new InsufficientBalanceError(`free ${format(before.free)} is below the ${LIVE_MIN_BALANCE} ${symbol} a live deploy requires`);
+    const minBalance = parseUnits(MIN_BALANCE, decimals);
+    if (mode !== "fork" && before.free < minBalance) {
+      throw new InsufficientBalanceError(`free ${format(before.free)} is below the ${MIN_BALANCE} ${symbol} a ${mode} deploy requires`);
     }
 
     const gas = await eth.estimateGas({ from: sender, data: code });
