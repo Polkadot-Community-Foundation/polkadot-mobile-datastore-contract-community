@@ -14,7 +14,11 @@ name: Deploy AccountDataStore
 # touched; it needs allow_redeploy because devnet has CONTRACT_ADDRESS. Any nonce is fine on devnet.
 # mode=live: Polkadot Asset Hub with the key contract-deployer through an eth-rpc container started in the
 # job against SUBSTRATE_WS_URL. The production environment requires reviewer approval before the job starts,
-# and the deploy script refuses a key whose nonce 0 is not yet the DotNS factory.
+# and the deploy script refuses a key whose nonce 0 is not yet the DotNS factory. Run it after the DotNS live
+# workflow and before the DotNS sweep of the key's balance: the deploy spends about 1.03 DOT.
+# The deploy script retries a failed attempt (DEPLOY_ATTEMPTS, default 3) and never sends twice: the send is
+# nonce-pinned and a retry first checks whether the earlier send landed. Inclusion and the record are read from
+# Substrate, so the eth-rpc container only has to be up for the preflight and the send.
 # No fork runs in CI: rehearse locally with scripts/rehearse-fork.sh.
 
 on:
@@ -49,7 +53,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Three attempts with their inclusion waits (ETH_TIMEOUT) and backoffs fit, with the build and the same-chain check.
+    timeout-minutes: 45
     environment:
       name: ${{ inputs.mode == 'live' && 'production' || 'devnet' }}
     permissions:
@@ -121,7 +126,9 @@ jobs:
         if: inputs.signer == 'kms' && inputs.mode == 'live'
         run: |
           ws=${SUBSTRATE_WS_URL:-$(node -p 'require("./scripts/lib/revive-deploy").NETWORKS[process.env.NETWORK].wsUrl')}
-          docker run -d --name eth-rpc --network host "$ETH_RPC_IMAGE" --node-rpc-url "$ws" --rpc-port 8545 --eth-pruning 1
+          # --eth-pruning N keeps the last N blocks of receipts in memory (blocks themselves come from the node).
+          # The deploy script reads inclusion from Substrate; N > 1 leaves the receipt readable for a while after.
+          docker run -d --name eth-rpc --network host "$ETH_RPC_IMAGE" --node-rpc-url "$ws" --rpc-port 8545 --eth-pruning 32
           for _ in $(seq 1 120); do
             curl -fsS -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
               http://127.0.0.1:8545 && exit 0
@@ -153,6 +160,8 @@ jobs:
             echo '```json'
             cat "deployments/$NETWORK.json"
             echo '```'
+            echo ""
+            jq -r 'if .cost then "Deployer \(.deployer.ss58) spent \(.cost.spent) planck (`cost.spent`, \(.cost.decimals) decimals) in \(.attempts) attempt(s)." else "Deployer \(.deployer.ss58)." end' "deployments/$NETWORK.json"
             echo ""
             echo "Remote Config \`account_data_store_config\`: \`{\"contractAddress\":\"$ADDRESS\"}\`"
             echo ""
