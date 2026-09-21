@@ -211,14 +211,13 @@ The script (shared logic in `scripts/lib/revive-deploy.js`):
 ### PCF environments: `devnet` and `production`
 
 - `devnet` is Paseo Asset Hub (para 1000), `production` is Polkadot Asset Hub (para 1000). Each preset pins the chain's genesis hash, so a `SUBSTRATE_WS_URL` pointing at another chain aborts before signing, and carries its PGAS asset id.
-- `.github/workflows/deploy.yml` deploys by manual dispatch into the GitHub environment of the same name. Each environment holds its own `DEPLOYER_MNEMONIC` secret and optional `SUBSTRATE_WS_URL` and `CONTRACT_ADDRESS` variables; `production` requires reviewer approval.
-- Inputs `signer` and `mode` pick the path:
-  - `signer=mnemonic`, `mode=live`: Path A with the environment's `DEPLOYER_MNEMONIC` (devnet).
-  - `signer=kms`, `mode=fork` (the defaults): the [ETH-RPC path](#path-c-cloud-kms-key-through-eth-rpc-scriptsdeploy-eth-rpcjs) on a chopsticks fork of Polkadot Asset Hub inside the job, signed by the `contract-deployer-rehearsal` KMS key. Nothing leaves the runner; the record and logs are uploaded as `rehearsal-production-fork`. `production` only.
-  - `signer=kms`, `mode=live`: the same path against the live chain, signed by the `contract-deployer` KMS key, through an eth-rpc container started in the job. `production` only.
-  - `signer=kms`, `mode=devnet`: a CI run of the same path on devnet Asset Hub (chain id 420420417) through its public ETH-RPC `https://eth-rpc-testnet.polkadot.io` (environment variable `ETH_RPC_URL` overrides), signed by the `contract-deployer-devnet` KMS key. `devnet` only. It records under `NETWORK=pcf-devnet-ci` (`deployments/pcf-devnet-ci.json`, artifact `deployment-pcf-devnet-ci`), so the devnet instance's record, `CONTRACT_ADDRESS` and Remote Config stay untouched. Because devnet has `CONTRACT_ADDRESS`, a non-dry run needs `allow_redeploy`: the tick acknowledges a second instance on that chain. The key's nonce 0 must already be the DotNS factory: run the DotNS `mode=devnet` workflow first.
+- `.github/workflows/deploy.yml` deploys by manual dispatch. Input `mode` picks the chain and with it the GitHub environment: `devnet` (the default) runs in `devnet`, `live` runs in `production`, which requires reviewer approval. Each environment holds its own `DEPLOYER_MNEMONIC` secret and optional `SUBSTRATE_WS_URL` and `CONTRACT_ADDRESS` variables. There is no fork mode in CI: rehearse on a local fork with `scripts/rehearse-fork.sh` (below).
+- Input `signer` picks the path:
+  - `signer=mnemonic`: Path A with the environment's `DEPLOYER_MNEMONIC`, recorded as `deployments/devnet.json` or `deployments/production.json`.
+  - `signer=kms`, `mode=devnet`: the [ETH-RPC path](#path-c-cloud-kms-key-through-eth-rpc-scriptsdeploy-eth-rpcjs) on devnet Asset Hub (chain id 420420417) through its public ETH-RPC `https://eth-rpc-testnet.polkadot.io` (environment variable `ETH_RPC_URL` overrides), signed by the `contract-deployer-devnet` KMS key. It records under `NETWORK=pcf-devnet-ci` (`deployments/pcf-devnet-ci.json`, artifact `deployment-pcf-devnet-ci`), so the devnet instance's record, `CONTRACT_ADDRESS` and Remote Config stay untouched. Because devnet has `CONTRACT_ADDRESS`, a non-dry run needs `allow_redeploy`: the tick acknowledges a second instance on that chain. The key may be at any nonce.
+  - `signer=kms`, `mode=live`: the same path against live Polkadot Asset Hub, signed by the `contract-deployer` KMS key, through an eth-rpc container started in the job against `SUBSTRATE_WS_URL` (or the preset endpoint). The key's nonce 0 must already be the DotNS factory: run the DotNS live workflow first.
 - `signer=kms` reaches the key through workload identity. Environment variables: `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `GCP_PROJECT_ID`, `GCP_LOCATION`, `GCP_KEY_RING`, optional `GCP_KEY_VERSION` (default 1) and `ETH_RPC_IMAGE` (default `parity/eth-rpc:v1.24.2`, pinned by digest).
-- The workflow builds, checks the bytecode hash (`npm run check:bytecode`), deploys (dry-run by default for `live`), runs `npm run verify:deployment`, and uploads `deployments/<environment>.json`.
+- The workflow builds, checks the bytecode hash (`npm run check:bytecode`), deploys (dry-run by default), runs `npm run verify:deployment`, and uploads `deployments/<NETWORK>.json`.
 - Once `CONTRACT_ADDRESS` is set, a non-dry-run deploy stops unless `allow_redeploy` is ticked: records live under the address the clients read from Remote Config `account_data_store_config`, and a new instance starts empty.
 
 ### Dev deploy from `//Alice`, `scripts/deploy-alice.js`
@@ -276,11 +275,17 @@ DEPLOYER_PRIVATE_KEY=0x… npx hardhat run scripts/deploy.js --network paseoAsse
 
 This path sends the PolkaVM blob as a plain contract-creation transaction (`cast send --create`, no constructor arguments) through the chain's ETH-RPC. It is how PCF deploys to Polkadot Asset Hub: the signer is the secp256k1 Cloud KMS key `contract-deployer`, which has no private key to export, so Foundry signs with `--gcp`.
 
-**Ordering rule.** The same key deploys DotNS first: DotNS's CREATE3 factory must be the key's nonce 0. AccountDataStore goes at any later nonce (its address is `create1(deployer, nonce)`), so the script refuses to run until `create1(deployer, 0)` holds code. Deploying AccountDataStore first would take nonce 0 and make the DotNS address set unreachable. `ALLOW_NONCE0_WITHOUT_CODE=1` skips the check for devnet and tests; it is refused for a production live deploy.
+**Ordering rule, production only.** On Polkadot Asset Hub the same key deploys DotNS first: DotNS's CREATE3 factory must be the key's nonce 0. AccountDataStore goes at any later nonce (its address is `create1(deployer, nonce)`), so on the production chain (eth chain id 420420419 or its genesis, live or a fork of it) the script refuses to run until `create1(deployer, 0)` holds code. Deploying AccountDataStore first would take nonce 0 and make the DotNS address set unreachable. On any other chain (devnet, its forks) the key may be at any nonce and the check is an info line.
 
 ```sh
 npm ci && npm run build:pvm
-# Polkadot Asset Hub has no public ETH-RPC: run one against the chain.
+
+# Devnet: public ETH-RPC, any nonce.
+export NETWORK=pcf-devnet-ci DEPLOY_MODE=devnet DEPLOY_SIGNER=gcp
+export GCP_PROJECT_ID=… GCP_LOCATION=us-east1 GCP_KEY_RING=pcf-devnet-signing GCP_KEY_NAME=contract-deployer-devnet GCP_KEY_VERSION=1
+DRY_RUN=1 npm run deploy:eth-rpc
+
+# Production. Polkadot Asset Hub has no public ETH-RPC: run one against the chain.
 docker run -d --name eth-rpc --network host parity/eth-rpc:v1.24.2 \
   --node-rpc-url wss://polkadot-asset-hub-rpc.polkadot.io --rpc-port 8545 --eth-pruning 1
 
@@ -291,20 +296,21 @@ npm run deploy:eth-rpc               # writes deployments/production.json
 npm run verify:deployment
 ```
 
-- `DEPLOY_SIGNER`: `gcp` (Cloud KMS via Application Default Credentials; the sender is read from the key), `keystore` (`ETH_KEYSTORE` or `ETH_KEYSTORE_ACCOUNT`, `ETH_PASSWORD` = password file), or `private-key` (`DEPLOYER_PRIVATE_KEY`, forks only). A production live deploy accepts only `gcp`.
-- `DEPLOY_MODE`: `fork` requires a chopsticks endpoint, `live` refuses one.
-- KMS keys are bound to chains (`scripts/lib/key-guard.js`), checked before the key is touched: `*-rehearsal` signs on forks only, `*-devnet` on live chain id 420420417 only, any other key (`contract-deployer`) on live chain id 420420419 only. A fork keeps Polkadot's genesis and chain id 420420419, so a signature made there is valid on the live chain: never sign on a fork with the production key. Every Asset Hub testnet reports 420420417, so a live KMS signature also needs a preset that pins the genesis (`devnet`, `pcf-devnet-ci`, `production`), and the ETH-RPC must serve the Substrate endpoint's chain: its block at a height produced after the run starts (the fork head in fork mode) must carry the eth hash Substrate stores for it (`revive.blockHash`). A leftover local fork ETH-RPC with a live Substrate endpoint is refused.
-- Preflight, before anything is signed: Substrate genesis matches the preset, ETH-RPC chain id matches (420420419 on Polkadot), nonce 0 is used by a contract, free balance of the key's account (`H160 ++ 0xEE × 12`) is at least 1.5 DOT in `live` and covers gas × gas price, no `CONTRACT_ADDRESS` (live) and no existing `deployments/<NETWORK>.json` unless `ALLOW_REDEPLOY=true`.
+- `DEPLOY_SIGNER`: `gcp` (Cloud KMS via Application Default Credentials; the sender is read from the key), `keystore` (`ETH_KEYSTORE` or `ETH_KEYSTORE_ACCOUNT`, `ETH_PASSWORD` = password file), or `private-key` (`DEPLOYER_PRIVATE_KEY`, `devnet` and `fork` only). Only `gcp` signs on live Polkadot Asset Hub.
+- `DEPLOY_MODE`: `devnet` and `live` refuse a chopsticks endpoint, `fork` requires one; `devnet` also requires the devnet chain (genesis check).
+- KMS keys are bound to modes and chains (`scripts/lib/key-guard.js`), checked before the key is touched and again once the chain is known: `contract-deployer` signs in `live` on chain id 420420419 only and never on a fork; `*-devnet` keys sign in `devnet` or `fork` on chain id 420420417 only (live devnet or a local fork of it); any other key name is refused. A fork keeps Polkadot's genesis and chain id 420420419, so a signature made there is valid on the live chain: never sign on a fork with the production key. Every Asset Hub testnet reports 420420417, so a live KMS signature also needs a preset that pins the genesis (`devnet`, `pcf-devnet-ci`, `production`), and the ETH-RPC must serve the Substrate endpoint's chain: its block at a height produced after the run starts (the fork head in fork mode) must carry the eth hash Substrate stores for it (`revive.blockHash`). A leftover local fork ETH-RPC with a live Substrate endpoint is refused.
+- Preflight, before anything is signed: Substrate genesis matches the preset, ETH-RPC chain id matches (420420419 on Polkadot), nonce 0 is used by a contract (production chain only; elsewhere an info line), free balance of the key's account (`H160 ++ 0xEE × 12`) is at least 1.5 DOT/PAS in `devnet` and `live` and covers gas × gas price, no `CONTRACT_ADDRESS` (`devnet`, `live`) and no existing `deployments/<NETWORK>.json` unless `ALLOW_REDEPLOY=true`.
 - The record has the fields `verify-deployment.js` reads (`address`, `genesisHash`, `bytecodeKeccak256`, `blockNumber`, and the Substrate `blockHash`), plus the ETH transaction hash, the `Revive.eth_transact` extrinsic hash, the signer and the balance spent.
 - ETH-RPC fees are paid in DOT, never PGAS.
 
-Rehearsal on a local fork (chopsticks on :8120, eth-rpc container `datastore-pipeline-ethrpc` on :8157, Docker required):
+Rehearsal on a local fork, not in CI (chopsticks on :8120, eth-rpc container `datastore-pipeline-ethrpc` on :8157, Docker required):
 
 ```sh
-npm run build:pvm && npm run rehearse:fork
+npm run build:pvm && npm run rehearse:fork                       # fork of Polkadot Asset Hub
+npm run build:pvm && FORK_NETWORK=devnet npm run rehearse:fork   # fork of devnet Asset Hub
 ```
 
-It forks live Polkadot Asset Hub, creates a throwaway keystore (or uses `DEPLOY_SIGNER=gcp` with a `*-rehearsal` key), funds it by storage override, deploys a one-byte stand-in contract at nonce 0 in place of the DotNS factory, checks that a fresh key is refused, then dry-runs, deploys and verifies. The record is moved into the work dir, out of `deployments/`. On a fork of statemint 2005000 the deploy spent 1.030724 DOT (fee plus deposits), against 1.030434 DOT for Path A on the same runtime.
+It forks the live chain, creates a throwaway keystore (`FORK_NETWORK=devnet` also accepts `DEPLOY_SIGNER=gcp` with the `*-devnet` key; no KMS key signs on a fork of production), funds it by storage override, deploys a one-byte stand-in contract at nonce 0 in place of the DotNS factory, checks the nonce rule with a fresh key (refused on a fork of production, an info line and a passing dry run on a fork of devnet), then dry-runs, deploys and verifies. The record is moved into the work dir, out of `deployments/`. On a fork of statemint 2005000 the deploy spent 1.030724 DOT (fee plus deposits), against 1.030434 DOT for Path A on the same runtime.
 
 ## Contributing
 

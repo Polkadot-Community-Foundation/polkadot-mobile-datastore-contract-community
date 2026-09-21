@@ -9,6 +9,7 @@
     "build:pvm": "hardhat compile --network localNode",
     "check:bytecode": "node scripts/check-bytecode.js",
     "test": "hardhat test",
+    "test:guard": "mocha test/key-guard.test.js",
     "test:pvm": "hardhat test --network localNode",
     "test:revm": "hardhat test --network localNodeEvm",
     "e2e:substrate": "hardhat run scripts/substrate-e2e.js --network localNode",

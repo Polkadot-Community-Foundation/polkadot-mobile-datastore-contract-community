@@ -1,35 +1,45 @@
 #!/usr/bin/env bash
-# Rehearses the ETH-RPC deploy on a chopsticks fork of live Polkadot Asset Hub:
-# fork + eth-rpc container, fund the key, stand in for the DotNS factory at nonce 0, refuse a fresh key,
-# dry-run, deploy, verify. Nothing leaves the fork.
+# Local rehearsal of the ETH-RPC deploy on a chopsticks fork of live Asset Hub (Polkadot by default, devnet with
+# FORK_NETWORK=devnet): fork + eth-rpc container, fund the key, stand in for the DotNS factory at nonce 0,
+# check the nonce-0 rule (a fresh key is refused on a fork of production, logged on a fork of devnet),
+# dry-run, deploy, verify. Nothing leaves the fork. Not run in CI.
 #
 #   npm run build:pvm && npm run rehearse:fork
+#   FORK_NETWORK=devnet npm run rehearse:fork
 #
 # Env:
-#   DEPLOY_SIGNER     keystore (default; a throwaway key is created when ETH_KEYSTORE is unset) | gcp (a *-rehearsal key)
+#   FORK_NETWORK      production (default) | devnet: which live chain to fork
+#   DEPLOY_SIGNER     keystore (default; a throwaway key is created when ETH_KEYSTORE is unset) | gcp
+#                     (the *-devnet key, FORK_NETWORK=devnet only: the production key never signs on a fork)
 #   WORK_DIR          fork config, logs, throwaway keys and the deployment record (default: a new temp dir)
 #   FORK_PORT         chopsticks port (default 8120)
 #   ETH_RPC_PORT      eth-rpc port (default 8157)
 #   ETH_RPC_IMAGE     eth-rpc container image
 #   ETH_RPC_CONTAINER container name (default datastore-pipeline-ethrpc)
-#   FORK_ENDPOINTS    comma-separated live Asset Hub endpoints
+#   FORK_ENDPOINTS    comma-separated live Asset Hub endpoints (default: FORK_NETWORK's)
 #   FORK_BLOCK        block to fork at (default: latest)
-#   FUND              planck set as the key's free balance (default 10 DOT)
+#   FUND              planck set as the key's free balance (default 10 DOT / 10 PAS)
 #   CHOPSTICKS_VERSION  default 1.5.1
 set -euo pipefail
 export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+FORK_NETWORK=${FORK_NETWORK:-production}
+case "$FORK_NETWORK" in
+  production) default_endpoints=wss://polkadot-asset-hub-rpc.polkadot.io,wss://asset-hub-polkadot-rpc.n.dwellir.com ;;
+  devnet) default_endpoints=wss://asset-hub-paseo-rpc.n.dwellir.com,wss://asset-hub-paseo.dotters.network ;;
+  *) echo "REFUSED: FORK_NETWORK must be production or devnet, got '$FORK_NETWORK'" >&2; exit 1 ;;
+esac
 FORK_PORT=${FORK_PORT:-8120}
 ETH_RPC_PORT=${ETH_RPC_PORT:-8157}
 ETH_RPC_IMAGE=${ETH_RPC_IMAGE:-docker.io/parity/eth-rpc:v1.24.2@sha256:74ebf6671d93e6ab759de4f84454b4d00be011530845b8edaaa83dbfc64c40c9}
 ETH_RPC_CONTAINER=${ETH_RPC_CONTAINER:-datastore-pipeline-ethrpc}
-FORK_ENDPOINTS=${FORK_ENDPOINTS:-wss://polkadot-asset-hub-rpc.polkadot.io,wss://asset-hub-polkadot-rpc.n.dwellir.com}
+FORK_ENDPOINTS=${FORK_ENDPOINTS:-$default_endpoints}
 FUND=${FUND:-100000000000}
 CHOPSTICKS_VERSION=${CHOPSTICKS_VERSION:-1.5.1}
 WORK_DIR=${WORK_DIR:-$(mktemp -d)}
 export DEPLOY_SIGNER=${DEPLOY_SIGNER:-keystore}
-export NETWORK=production DEPLOY_MODE=fork
+export NETWORK=$FORK_NETWORK DEPLOY_MODE=fork
 export SUBSTRATE_WS_URL=ws://127.0.0.1:$FORK_PORT ETH_RPC_URL=http://127.0.0.1:$ETH_RPC_PORT
 SUBSTRATE_HTTP=http://127.0.0.1:$FORK_PORT
 RECORD=$ROOT/deployments/$NETWORK.json
@@ -40,8 +50,9 @@ NONCE0_STANDIN=0x600180600a3d393df300
 mkdir -p "$WORK_DIR/keys"
 [ -f "$PASSWORD_FILE" ] || printf rehearsal >"$PASSWORD_FILE"
 [ -e "$RECORD" ] && { echo "REFUSED: $RECORD exists; move it out first" >&2; exit 1; }
-if [ "$DEPLOY_SIGNER" = gcp ] && [[ "${GCP_KEY_NAME:-}" != *-rehearsal ]]; then
-  echo "REFUSED: a fork signs only with a *-rehearsal KMS key, got '${GCP_KEY_NAME:-}'" >&2
+# The stand-in below signs before scripts/deploy-eth-rpc.js runs its key guard: check the key here too.
+if [ "$DEPLOY_SIGNER" = gcp ] && { [ "$FORK_NETWORK" != devnet ] || [[ "${GCP_KEY_NAME:-}" != *-devnet ]]; }; then
+  echo "REFUSED: a KMS key signs on a fork only when it is a *-devnet key on FORK_NETWORK=devnet, got '${GCP_KEY_NAME:-}' on $FORK_NETWORK" >&2
   exit 1
 fi
 
@@ -89,7 +100,7 @@ nonce_of() {
   rpc "$SUBSTRATE_HTTP" system_accountNextIndex "[\"$(account_of "$1")\"]" | jq -r .result
 }
 
-echo "== fork: chopsticks $CHOPSTICKS_VERSION on :$FORK_PORT, work dir $WORK_DIR"
+echo "== fork of $FORK_NETWORK: chopsticks $CHOPSTICKS_VERSION on :$FORK_PORT, work dir $WORK_DIR"
 {
   echo "endpoint:"
   IFS=, read -ra endpoints <<<"$FORK_ENDPOINTS"
@@ -125,17 +136,25 @@ if [ "$(nonce_of "$SENDER")" = 0 ]; then
   cast send --rpc-url "$ETH_RPC_URL" --json "${signer_args[@]}" --create "$NONCE0_STANDIN" | jq -c '{contractAddress, status, gasUsed}'
 fi
 
-echo "== negative: a fresh key at nonce 0 is refused"
 fresh_keystore=$(new_keystore fresh)
 fresh=$(ETH_KEYSTORE=$fresh_keystore ETH_PASSWORD=$PASSWORD_FILE cast wallet address)
 fund "$fresh"
-if ETH_KEYSTORE=$fresh_keystore ETH_PASSWORD=$PASSWORD_FILE DEPLOY_SIGNER=keystore \
-  node "$ROOT/scripts/deploy-eth-rpc.js" >"$WORK_DIR/negative.log" 2>&1; then
-  echo "FAIL: the fresh key $fresh deployed" >&2
-  exit 1
+if [ "$FORK_NETWORK" = production ]; then
+  echo "== negative: a fresh key at nonce 0 is refused on a fork of production"
+  if ETH_KEYSTORE=$fresh_keystore ETH_PASSWORD=$PASSWORD_FILE DEPLOY_SIGNER=keystore \
+    node "$ROOT/scripts/deploy-eth-rpc.js" >"$WORK_DIR/negative.log" 2>&1; then
+    echo "FAIL: the fresh key $fresh deployed" >&2
+    exit 1
+  fi
+  grep -q 'REFUSED: create1' "$WORK_DIR/negative.log" || { cat "$WORK_DIR/negative.log" >&2; exit 1; }
+  grep REFUSED "$WORK_DIR/negative.log"
+else
+  echo "== nonce rule: a fresh key at nonce 0 passes preflight on a fork of $FORK_NETWORK (dry run)"
+  ETH_KEYSTORE=$fresh_keystore ETH_PASSWORD=$PASSWORD_FILE DEPLOY_SIGNER=keystore DRY_RUN=1 \
+    node "$ROOT/scripts/deploy-eth-rpc.js" >"$WORK_DIR/nonce-rule.log" 2>&1 || { cat "$WORK_DIR/nonce-rule.log" >&2; exit 1; }
+  grep -q 'nonce 0 free' "$WORK_DIR/nonce-rule.log" || { cat "$WORK_DIR/nonce-rule.log" >&2; exit 1; }
+  grep 'nonce 0 free' "$WORK_DIR/nonce-rule.log"
 fi
-grep -q 'REFUSED: create1' "$WORK_DIR/negative.log" || { cat "$WORK_DIR/negative.log" >&2; exit 1; }
-grep REFUSED "$WORK_DIR/negative.log"
 [ "$(nonce_of "$fresh")" = 0 ] || { echo "FAIL: the fresh key's nonce moved" >&2; exit 1; }
 
 echo "== dry run"

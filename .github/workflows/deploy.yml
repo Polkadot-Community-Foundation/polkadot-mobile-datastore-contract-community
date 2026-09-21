@@ -1,40 +1,37 @@
 name: Deploy AccountDataStore
 
-# One workflow, two GitHub environments. Each environment holds its own deployer
-# secret and endpoint variable, so a devnet run can never sign with the production key.
+# One workflow, two GitHub environments, picked by `mode`: devnet runs in the devnet environment, live in
+# production. Each environment holds its own deployer secret and endpoint variable, so a devnet run can never
+# sign with the production key.
 #   secret   DEPLOYER_MNEMONIC   sr25519 deployer (BIP-39), signer=mnemonic
 #   variable SUBSTRATE_WS_URL    optional; overrides the network preset endpoint
 #   variable CONTRACT_ADDRESS    set once deployed; blocks an accidental second instance
-# signer=kms signs through ETH-RPC with the Cloud KMS key contract-deployer (live) or
-# contract-deployer-rehearsal (fork), reached through workload identity:
+# signer=kms signs through ETH-RPC with a Cloud KMS key reached through workload identity:
 #   variables GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_PROJECT_ID, GCP_LOCATION,
-#             GCP_KEY_RING, optional GCP_KEY_VERSION (default 1), optional ETH_RPC_IMAGE
-# mode=fork deploys on a chopsticks fork of live Polkadot Asset Hub inside the job; nothing leaves the runner.
-# mode=devnet (environment devnet, signer kms) deploys on devnet Asset Hub through its public ETH-RPC
-# (variable ETH_RPC_URL overrides) with the key contract-deployer-devnet, recorded as pcf-devnet-ci so the
-# devnet instance's record is never touched. It needs allow_redeploy: devnet has CONTRACT_ADDRESS.
-# The production environment requires reviewer approval before the job starts.
+#             GCP_KEY_RING, optional GCP_KEY_VERSION (default 1), optional ETH_RPC_IMAGE, optional ETH_RPC_URL (devnet)
+# mode=devnet (default): devnet Asset Hub through its public ETH-RPC (variable ETH_RPC_URL overrides) with the
+# key contract-deployer-devnet. A kms run records as pcf-devnet-ci so the devnet instance's record is never
+# touched; it needs allow_redeploy because devnet has CONTRACT_ADDRESS. Any nonce is fine on devnet.
+# mode=live: Polkadot Asset Hub with the key contract-deployer through an eth-rpc container started in the
+# job against SUBSTRATE_WS_URL. The production environment requires reviewer approval before the job starts,
+# and the deploy script refuses a key whose nonce 0 is not yet the DotNS factory.
+# No fork runs in CI: rehearse locally with scripts/rehearse-fork.sh.
 
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: Target environment
+      mode:
+        description: devnet (devnet Asset Hub, environment devnet) or live (Polkadot Asset Hub, environment production)
         type: choice
-        options: [devnet, production]
-        required: true
+        options: [devnet, live]
+        default: devnet
       signer:
         description: kms (ETH-RPC, Cloud KMS) or mnemonic (Substrate, DEPLOYER_MNEMONIC)
         type: choice
         options: [kms, mnemonic]
         default: kms
-      mode:
-        description: fork (rehearsal on a fork of Polkadot Asset Hub, kms only), live, or devnet (kms CI run on devnet)
-        type: choice
-        options: [fork, live, devnet]
-        default: fork
       dry_run:
-        description: Estimate only, submit nothing (live, devnet)
+        description: Estimate only, submit nothing
         type: boolean
         default: true
       allow_redeploy:
@@ -46,7 +43,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-${{ inputs.environment }}
+  group: deploy-${{ inputs.mode }}
   cancel-in-progress: false
 
 jobs:
@@ -54,13 +51,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
-      name: ${{ inputs.environment }}
+      name: ${{ inputs.mode == 'live' && 'production' || 'devnet' }}
     permissions:
       contents: read
       id-token: write
     env:
-      ENVIRONMENT: ${{ inputs.environment }}
-      NETWORK: ${{ inputs.mode == 'devnet' && 'pcf-devnet-ci' || inputs.environment }}
+      ENVIRONMENT: ${{ inputs.mode == 'live' && 'production' || 'devnet' }}
+      NETWORK: ${{ inputs.mode == 'live' && 'production' || inputs.signer == 'kms' && 'pcf-devnet-ci' || 'devnet' }}
       SIGNER: ${{ inputs.signer }}
       MODE: ${{ inputs.mode }}
       DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
@@ -71,28 +68,9 @@ jobs:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_LOCATION: ${{ vars.GCP_LOCATION }}
       GCP_KEY_RING: ${{ vars.GCP_KEY_RING }}
-      GCP_KEY_NAME: ${{ inputs.mode == 'live' && 'contract-deployer' || inputs.mode == 'devnet' && 'contract-deployer-devnet' || 'contract-deployer-rehearsal' }}
+      GCP_KEY_NAME: ${{ inputs.mode == 'live' && 'contract-deployer' || 'contract-deployer-devnet' }}
       GCP_KEY_VERSION: ${{ vars.GCP_KEY_VERSION || '1' }}
     steps:
-      - name: Check inputs
-        run: |
-          if [ "$SIGNER" = mnemonic ] && [ "$MODE" != live ]; then
-            echo "::error::signer=mnemonic runs with mode=live only."
-            exit 1
-          fi
-          if [ "$MODE" = fork ] && [ "$ENVIRONMENT" != production ]; then
-            echo "::error::mode=fork forks Polkadot Asset Hub; run it in the production environment."
-            exit 1
-          fi
-          if [ "$MODE" = devnet ] && { [ "$ENVIRONMENT" != devnet ] || [ "$SIGNER" != kms ]; }; then
-            echo "::error::mode=devnet runs in the devnet environment with signer=kms."
-            exit 1
-          fi
-          if [ "$MODE" = live ] && [ "$SIGNER" = kms ] && [ "$ENVIRONMENT" != production ]; then
-            echo "::error::signer=kms on devnet runs as mode=devnet."
-            exit 1
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -109,7 +87,7 @@ jobs:
         run: npm run -s check:bytecode
 
       - name: Refuse a second instance
-        if: env.CONTRACT_ADDRESS != '' && inputs.mode != 'fork'
+        if: env.CONTRACT_ADDRESS != ''
         run: |
           ADDRESS="$CONTRACT_ADDRESS" npm run -s verify:deployment || true
           if [ "$DRY_RUN" != "1" ] && [ "$ALLOW_REDEPLOY" != "true" ]; then
@@ -123,7 +101,7 @@ jobs:
           DEPLOYER_MNEMONIC: ${{ secrets.DEPLOYER_MNEMONIC }}
         run: |
           if [ -z "$DEPLOYER_MNEMONIC" ]; then
-            echo "::error::The $NETWORK environment has no DEPLOYER_MNEMONIC secret."
+            echo "::error::The $ENVIRONMENT environment has no DEPLOYER_MNEMONIC secret."
             exit 1
           fi
           npm run -s deploy:substrate
@@ -139,14 +117,6 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - name: Rehearse on a fork of Polkadot Asset Hub
-        if: inputs.signer == 'kms' && inputs.mode == 'fork'
-        env:
-          DEPLOY_SIGNER: gcp
-          DRY_RUN: "0"
-          WORK_DIR: ${{ runner.temp }}/fork
-        run: npm run -s rehearse:fork
-
       - name: Start eth-rpc
         if: inputs.signer == 'kms' && inputs.mode == 'live'
         run: |
@@ -161,20 +131,20 @@ jobs:
           exit 1
 
       - name: Deploy through ETH-RPC
-        if: inputs.signer == 'kms' && inputs.mode != 'fork'
+        if: inputs.signer == 'kms'
         env:
           DEPLOY_SIGNER: gcp
-          DEPLOY_MODE: live
-          ETH_RPC_URL: ${{ inputs.mode == 'devnet' && (vars.ETH_RPC_URL || 'https://eth-rpc-testnet.polkadot.io') || 'http://127.0.0.1:8545' }}
+          DEPLOY_MODE: ${{ inputs.mode }}
+          ETH_RPC_URL: ${{ inputs.mode == 'live' && 'http://127.0.0.1:8545' || vars.ETH_RPC_URL || 'https://eth-rpc-testnet.polkadot.io' }}
           ETH_TIMEOUT: "300"
         run: npm run -s deploy:eth-rpc
 
       - name: Verify on chain
-        if: env.DRY_RUN != '1' && inputs.mode != 'fork'
+        if: env.DRY_RUN != '1'
         run: npm run -s verify:deployment
 
       - name: Summary
-        if: env.DRY_RUN != '1' && inputs.mode == 'live'
+        if: env.DRY_RUN != '1' && env.NETWORK != 'pcf-devnet-ci'
         run: |
           ADDRESS=$(jq -r .address "deployments/$NETWORK.json")
           {
@@ -190,7 +160,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Devnet CI summary
-        if: env.DRY_RUN != '1' && inputs.mode == 'devnet'
+        if: env.DRY_RUN != '1' && env.NETWORK == 'pcf-devnet-ci'
         run: |
           {
             echo "### AccountDataStore CI run on devnet, record $NETWORK (not the devnet instance)"
@@ -202,31 +172,10 @@ jobs:
             echo "Leave \`CONTRACT_ADDRESS\` and Remote Config unchanged."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Fork summary
-        if: inputs.mode == 'fork'
-        run: |
-          {
-            echo "### AccountDataStore rehearsal on a fork of $NETWORK (not a deployment)"
-            echo ""
-            echo '```json'
-            cat "$RUNNER_TEMP/fork/deployment-fork.json"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload deployment record
-        if: env.DRY_RUN != '1' && inputs.mode != 'fork'
+        if: env.DRY_RUN != '1'
         uses: actions/upload-artifact@v4
         with:
           name: deployment-${{ env.NETWORK }}
           path: deployments/${{ env.NETWORK }}.json
-          retention-days: 90
-
-      - name: Upload fork rehearsal
-        if: always() && inputs.mode == 'fork'
-        uses: actions/upload-artifact@v4
-        with:
-          name: rehearsal-${{ inputs.environment }}-fork
-          path: |
-            ${{ runner.temp }}/fork/deployment-fork.json
-            ${{ runner.temp }}/fork/*.log
           retention-days: 90
