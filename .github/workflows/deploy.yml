@@ -76,6 +76,16 @@ jobs:
       GCP_KEY_NAME: ${{ inputs.mode == 'live' && 'contract-deployer' || 'contract-deployer-devnet' }}
       GCP_KEY_VERSION: ${{ vars.GCP_KEY_VERSION || '1' }}
     steps:
+      # Live deploys run from a release tag, so the deployed commit has a permanent name.
+      - name: Require a release tag for live
+        if: inputs.mode == 'live'
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::mode=live must be dispatched from a release tag, not $GITHUB_REF_TYPE $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "ref: $GITHUB_REF_TYPE $GITHUB_REF_NAME ($GITHUB_SHA)"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
