@@ -171,8 +171,8 @@ Run `measure-deposits.js` on a fresh node: the deploy deposit includes the code 
 
 ### Deployments and releases
 
-- This repo does not publish or maintain deployed instances. Anyone who deploys the contract is responsible for their own deployment.
-- The deploy scripts write `deployments/<network>.json` locally. The directory is git-ignored.
+- Anyone who deploys the contract is responsible for their own deployment. PCF's production instance is recorded below.
+- The deploy scripts write `deployments/<network>.json` locally. The directory is git-ignored except `deployments/production.json`, the record of the production instance.
 - Tagged releases, if any, are on the GitHub Releases page.
 - To verify a build, compare the keccak256 of the PolkaVM bytecode: the value in [Toolchain and versions](#toolchain-and-versions), the `bytecodeKeccak256` field the Substrate deploy scripts record, and the code on chain, e.g. `cast keccak $(cast code <address> --rpc-url <eth-rpc>)`.
 
@@ -207,6 +207,21 @@ The script (shared logic in `scripts/lib/revive-deploy.js`):
 - Signs with only the extensions listed for metadata v16 extension version 0, which is what a v4 signed transaction carries. Chains that list the individuality extensions only in version 1 can then still decode it.
 - Calls `map_account` first only on chains without AutoMap, when the deployer is not yet mapped.
 - Accepts `BYTECODE=evm` to deploy the solc build instead.
+
+### Production deployment
+
+AccountDataStore is live on Polkadot Asset Hub (para 1000, eth chain id 420420419, runtime fellows v2.5.0 / statemint 2005000), deployed 2026-09-22 from tag [`v0.1.1`](https://github.com/Polkadot-Community-Foundation/polkadot-mobile-datastore-contract-community/releases/tag/v0.1.1) (commit `1f3221c5`) by [run 35772784229](https://github.com/Polkadot-Community-Foundation/polkadot-mobile-datastore-contract-community/actions/runs/35772784229) (`mode=live`, `signer=kms`, Cloud KMS key `contract-deployer`, nonce 81). The record is [`deployments/production.json`](./deployments/production.json); `NETWORK=production npm run verify:deployment` reads it. The contract has no owner.
+
+| | |
+|---|---|
+| Address | `0x146a90b89eD24DCAa9C4048269a7b57A3B93cF80` |
+| Block | 20963248 (`0x60b98e7f782f282eae74c6c0c65a8ed7cc67163d96cd363b4ca47a5cb04c6257`) |
+| Transaction | `0xb227e87ec76c16e6aca8b663ead361f141c2e3478f9f3dc2b9555ded60d11a75` |
+| Bytecode keccak256 (verified on chain) | `0xb62b11767596ab2cc5fd611714d19598f6600906ed3abef721d6ac4084309aa8` |
+| Cost | 1.0307 DOT (`cost.spent` 10307240000 planck) |
+| Remote Config `account_data_store_config` (production) | `{"contractAddress":"0x146a90b89ed24dcaa9c4048269a7b57a3b93cf80"}` |
+
+The `production` environment variable `CONTRACT_ADDRESS` holds the same address, so a further live deploy needs `allow_redeploy`.
 
 ### PCF environments: `devnet` and `production`
 

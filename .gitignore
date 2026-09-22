@@ -10,8 +10,9 @@ coverage.json
 dist/
 ignition/deployments/chain-31337
 
-# Deployment records written by the deploy scripts
-deployments/
+# Deployment records written by the deploy scripts (the production record is versioned)
+deployments/*
+!deployments/production.json
 
 # Environment and secrets (keep the example)
 .env*

@@ -1,0 +1,37 @@
+{
+  "contract": "AccountDataStore",
+  "address": "0x146a90b89ed24dcaa9c4048269a7b57a3b93cf80",
+  "network": "production",
+  "mode": "live",
+  "chain": "Polkadot Asset Hub",
+  "genesisHash": "0x68d56f15f85d3136970ec16946040bc1752654e906147f7e43e9d539d7c3de2f",
+  "ethChainId": 420420419,
+  "specName": "statemint",
+  "specVersion": 2005000,
+  "bytecode": "pvm",
+  "bytecodeKeccak256": "0xb62b11767596ab2cc5fd611714d19598f6600906ed3abef721d6ac4084309aa8",
+  "deployer": {
+    "ss58": "14dRCDsDeCv6Sx7iCskM7Y1hyxpEZcbuP168vK8p2wdmV887",
+    "accountId": "0xa07afa38c2e9acdc38215c03bc486789e59f1b68eeeeeeeeeeeeeeeeeeeeeeee",
+    "h160": "0xa07afa38c2e9acdc38215c03bc486789e59f1b68",
+    "nonce": 81
+  },
+  "signer": {
+    "kind": "gcp",
+    "key": "pcf-production-signing/contract-deployer/1"
+  },
+  "transactionHash": "0xb227e87ec76c16e6aca8b663ead361f141c2e3478f9f3dc2b9555ded60d11a75",
+  "extrinsicHash": "0x05ed527f158865303239db0d6ec4a93127670a85e6c90ad2f2c4926359037274",
+  "blockHash": "0x60b98e7f782f282eae74c6c0c65a8ed7cc67163d96cd363b4ca47a5cb04c6257",
+  "blockNumber": 20963248,
+  "ethBlockHash": "0xbfffbf72c1349cea6ff5013a96e530dfcbd777dc105f83c159e00642954901c4",
+  "attempts": 1,
+  "cost": {
+    "basis": "System.Account free + reserved of the deployer, at the parent of the inclusion block minus at the inclusion block",
+    "before": "87175464000",
+    "after": "76868224000",
+    "spent": "10307240000",
+    "decimals": 10
+  },
+  "deployedAt": "2026-09-22T19:19:30.747Z"
+}
