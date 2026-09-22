@@ -216,7 +216,7 @@ The script (shared logic in `scripts/lib/revive-deploy.js`):
   - `signer=mnemonic`: Path A with the environment's `DEPLOYER_MNEMONIC`, recorded as `deployments/devnet.json` or `deployments/production.json`.
   - `signer=kms`, `mode=devnet`: the [ETH-RPC path](#path-c-cloud-kms-key-through-eth-rpc-scriptsdeploy-eth-rpcjs) on devnet Asset Hub (chain id 420420417) through its public ETH-RPC `https://eth-rpc-testnet.polkadot.io` (environment variable `ETH_RPC_URL` overrides), signed by the `contract-deployer-devnet` KMS key. It records under `NETWORK=pcf-devnet-ci` (`deployments/pcf-devnet-ci.json`, artifact `deployment-pcf-devnet-ci`), so the devnet instance's record, `CONTRACT_ADDRESS` and Remote Config stay untouched. Because devnet has `CONTRACT_ADDRESS`, a non-dry run needs `allow_redeploy`: the tick acknowledges a second instance on that chain. The key may be at any nonce.
   - `signer=kms`, `mode=live`: the same path against live Polkadot Asset Hub, signed by the `contract-deployer` KMS key, through an eth-rpc container started in the job against `SUBSTRATE_WS_URL` (or the preset endpoint). The key's nonce 0 must already be the DotNS factory: run the DotNS live workflow first. See [Production run order](#production-run-order).
-- `signer=kms` reaches the key through workload identity. Environment variables: `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `GCP_PROJECT_ID`, `GCP_LOCATION`, `GCP_KEY_RING`, optional `GCP_KEY_VERSION` (default 1) and `ETH_RPC_IMAGE` (default `parity/eth-rpc:v1.24.2`, pinned by digest).
+- `signer=kms` reaches the key through workload identity. Environment variables: `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `GCP_PROJECT_ID`, `GCP_LOCATION`, `GCP_KEY_RING`, optional `GCP_KEY_VERSION` (default 1) and `ETH_RPC_IMAGE` (default `parity/eth-rpc:v1.25.0-rc2`, pinned by digest).
 - The workflow builds, checks the bytecode hash (`npm run check:bytecode`), deploys (dry-run by default), runs `npm run verify:deployment`, and uploads `deployments/<NETWORK>.json`.
 - Once `CONTRACT_ADDRESS` is set, a non-dry-run deploy stops unless `allow_redeploy` is ticked: records live under the address the clients read from Remote Config `account_data_store_config`, and a new instance starts empty.
 
@@ -296,7 +296,7 @@ export GCP_PROJECT_ID=… GCP_LOCATION=us-east1 GCP_KEY_RING=pcf-devnet-signing 
 DRY_RUN=1 npm run deploy:eth-rpc
 
 # Production. Polkadot Asset Hub has no public ETH-RPC: run one against the chain.
-docker run -d --name eth-rpc --network host parity/eth-rpc:v1.24.2 \
+docker run -d --name eth-rpc --network host parity/eth-rpc:v1.25.0-rc2 \
   --node-rpc-url wss://polkadot-asset-hub-rpc.polkadot.io --rpc-port 8545 --eth-pruning 32
 
 # Preflight the production key's funding and nonce without access to the key (no signer, no send).
